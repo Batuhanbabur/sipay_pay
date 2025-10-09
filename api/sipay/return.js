@@ -1,43 +1,45 @@
 // api/sipay/return.js
+export const config = { api: { bodyParser: false } };
+
 export default async function handler(req, res) {
-  // Hedef sayfalarınız:
   const THANKYOU_URL = process.env.THANKYOU_URL || "https://do-lab.co/tesekkur_ederiz/";
   const CANCEL_URL   = process.env.CANCEL_URL   || "https://do-lab.co/basarisiz/";
 
-  // POST gövdesini güvenliçe al (JSON ya da x-www-form-urlencoded fark etmez)
-  let data = {};
+  // Ham body'yi al (Sipay bazen x-www-form-urlencoded, bazen JSON gönderir)
+  let body = {};
   if (req.method === "POST") {
-    if (req.body && Object.keys(req.body).length) {
-      data = req.body;
-    } else {
-      const raw = await new Promise((resolve) => {
-        let buf = "";
-        req.on("data", (c) => (buf += c));
-        req.on("end", () => resolve(buf));
-      });
-      try { data = JSON.parse(raw); }
-      catch { data = Object.fromEntries(new URLSearchParams(raw)); }
+    const raw = await new Promise((resolve) => {
+      let buf = ""; req.on("data", c => buf += c); req.on("end", () => resolve(buf));
+    });
+    try { body = JSON.parse(raw); } 
+    catch {
+      body = Object.fromEntries(new URLSearchParams(raw)); // form-urlencoded
     }
   } else {
-    data = req.query || {};
+    body = req.query || {};
   }
 
-  // Sipay’in başarı bilgisini yakala
+  // Başarı tespiti
   const s = String(
-    data.payment_status ?? data.status ?? data.sipay_status ?? data.md_status ?? ""
+    body.payment_status ?? body.status ?? body.sipay_status ?? body.md_status ?? ""
   ).toLowerCase();
+  const success = (s === "1" || s === "success" || s === "completed" || s === "approved");
 
-  const isSuccess =
-    s === "1" || s === "success" || s === "completed" || s === "approved";
+  // Kullanışlı alanları query'e ekle
+  const tgt = new URL(success ? THANKYOU_URL : CANCEL_URL);
+  const whitelist = [
+    "invoice_id","order_id","amount","currency_code",
+    "status_code","status_description","auth_code","error","error_code",
+    "md_status","sipay_status","payment_status","transaction_type"
+  ];
+  whitelist.forEach(k => { if (body[k]) tgt.searchParams.set(k, String(body[k])); });
 
-  // Bilgilendirici query string ekleyerek yönlendir
-  const targetBase = isSuccess ? THANKYOU_URL : CANCEL_URL;
-  const url = new URL(targetBase);
-  ["invoice_id","order_id","amount","currency_code","status_code","status_description","auth_code","error","error_code"]
-    .forEach((k) => { if (data[k]) url.searchParams.set(k, data[k]); });
+  // Debug için hata mesajı yoksa, generic mesaj
+  if (!success && !body.error && !body.status_description) {
+    tgt.searchParams.set("debug", "Sipay cancel döndü (alanlar boş olabilir)");
+  }
 
-  res.setHeader("Location", url.toString());
-  res.status(302).end();
+  res.statusCode = 302;
+  res.setHeader("Location", tgt.toString());
+  res.end();
 }
-
-export const config = { api: { bodyParser: true } };
