@@ -1,45 +1,40 @@
-// api/sipay/return.js
-export const config = { api: { bodyParser: false } };
-
+// File: /api/sipay/return.js
 export default async function handler(req, res) {
-  const THANKYOU_URL = process.env.THANKYOU_URL || "https://do-lab.co/tesekkur_ederiz/";
-  const CANCEL_URL   = process.env.CANCEL_URL   || "https://do-lab.co/basarisiz/";
+  // CORS (zarar vermez)
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST,GET,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.status(204).end();
 
-  // Ham body'yi al (Sipay bazen x-www-form-urlencoded, bazen JSON gönderir)
-  let body = {};
-  if (req.method === "POST") {
-    const raw = await new Promise((resolve) => {
-      let buf = ""; req.on("data", c => buf += c); req.on("end", () => resolve(buf));
-    });
-    try { body = JSON.parse(raw); } 
-    catch {
-      body = Object.fromEntries(new URLSearchParams(raw)); // form-urlencoded
-    }
-  } else {
-    body = req.query || {};
-  }
+  // Readymag’te göstereceğin sayfalar
+  const THANKYOU_URL = 'https://do-lab.co/tesekkur_ederiz/';
+  const FAIL_URL     = 'https://do-lab.co/basarisiz/';
 
-  // Başarı tespiti
-  const s = String(
-    body.payment_status ?? body.status ?? body.sipay_status ?? body.md_status ?? ""
-  ).toLowerCase();
-  const success = (s === "1" || s === "success" || s === "completed" || s === "approved");
+  // Vercel Node runtime’da req.body genelde parse’lı gelir
+  const b = (req.body && typeof req.body === 'object') ? req.body : {};
 
-  // Kullanışlı alanları query'e ekle
-  const tgt = new URL(success ? THANKYOU_URL : CANCEL_URL);
-  const whitelist = [
-    "invoice_id","order_id","amount","currency_code",
-    "status_code","status_description","auth_code","error","error_code",
-    "md_status","sipay_status","payment_status","transaction_type"
-  ];
-  whitelist.forEach(k => { if (body[k]) tgt.searchParams.set(k, String(body[k])); });
+  // Sipay’in gönderdiği ana alanları toparla
+  const posted = {
+    invoice_id:          b.invoice_id ?? '',
+    total:               b.total ?? '',
+    currency_code:       b.currency_code ?? '',
+    installments_number: b.installments_number ?? '',
+    status_code:         b.status_code ?? b.error_code ?? '',
+    status_description:  b.status_description ?? b.error ?? '',
+    amount:              b.amount ?? '',            // bazı yanıtlar 'amount' kullanıyor
+    sipay_status:        b.sipay_status ?? '',
+    payment_status:      b.payment_status ?? '',
+    transaction_type:    b.transaction_type ?? '',
+  };
 
-  // Debug için hata mesajı yoksa, generic mesaj
-  if (!success && !body.error && !body.status_description) {
-    tgt.searchParams.set("debug", "Sipay cancel döndü (alanlar boş olabilir)");
-  }
+  // Başarılı mı?
+  const isOK = String(posted.sipay_status) === '1' || String(posted.payment_status) === '1';
 
-  res.statusCode = 302;
-  res.setHeader("Location", tgt.toString());
-  res.end();
+  // Teşhis için ek bilgiler
+  const qs = new URLSearchParams();
+  for (const [k,v] of Object.entries(posted)) qs.set(k, String(v));
+  qs.set('posted_total_type', typeof posted.total); // "string" mi?
+  qs.set('dbg', '1');
+
+  return res.redirect(302, `${isOK ? THANKYOU_URL : FAIL_URL}?${qs.toString()}`);
 }
