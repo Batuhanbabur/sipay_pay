@@ -49,6 +49,29 @@ function readJsonBody(req) {
   });
 }
 
+function pickEnvConfig(env) {
+  const MODE = (String(env).toLowerCase() === 'test') ? 'TEST' : 'LIVE';
+
+  // Yeni isimler (önerilen)
+  let MERCHANT_KEY = process.env[`SIPAY_MERCHANT_KEY_${MODE}`];
+  let APP_SECRET   = process.env[`SIPAY_APP_SECRET_${MODE}`];
+  let BASE         = process.env[`SIPAY_BASE_${MODE}`];
+
+  // Geriye uyumluluk (eski isimler)
+  if (!MERCHANT_KEY) MERCHANT_KEY = process.env.SIPAY_MERCHANT_KEY;
+  if (!APP_SECRET)   APP_SECRET   = process.env.SIPAY_APP_SECRET;
+  if (!BASE)         BASE         = process.env.SIPAY_BASE;
+
+  // Varsayılan base
+  if (!BASE) {
+    BASE = (MODE === 'LIVE')
+      ? 'https://app.sipay.com.tr/ccpayment'
+      : 'https://provisioning.sipay.com.tr/ccpayment';
+  }
+
+  return { MODE, MERCHANT_KEY, APP_SECRET, BASE };
+}
+
 module.exports = async (req, res) => {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -61,33 +84,23 @@ module.exports = async (req, res) => {
     return res.status(400).json({ ok: false, error: 'BAD_JSON', detail: String(e && e.message || e) });
   }
 
-  // İstekten gelenler
   const {
     total,                   // number | string
-    currency_code = 'TRY',   // "TRY"
-    installments_number = 1, // integer
-    env = 'live',            // "live" | "test"
+    currency_code = 'TRY',
+    installments_number = 1,
+    env = 'live',
   } = body || {};
 
-  const MODE = (String(env).toLowerCase() === 'test') ? 'TEST' : 'LIVE';
-
-  // Sadece *_LIVE / *_TEST isimleri
-  const MERCHANT_KEY = process.env[`SIPAY_MERCHANT_KEY_${MODE}`];
-  const APP_SECRET   = process.env[`SIPAY_APP_SECRET_${MODE}`];
-  const BASE_DEFAULT = (MODE === 'LIVE')
-    ? 'https://app.sipay.com.tr/ccpayment'
-    : 'https://provisioning.sipay.com.tr/ccpayment';
-  const BASE = process.env[`SIPAY_BASE_${MODE}`] || BASE_DEFAULT;
+  const { MODE, MERCHANT_KEY, APP_SECRET, BASE } = pickEnvConfig(env);
 
   if (!MERCHANT_KEY || !APP_SECRET) {
     return res.status(500).json({
       ok: false,
       error: 'CONFIG',
-      detail: `Missing SIPAY_MERCHANT_KEY_${MODE} or SIPAY_APP_SECRET_${MODE}`
+      detail: `Missing SIPAY_MERCHANT_KEY_${MODE} or SIPAY_APP_SECRET_${MODE} (or legacy names SIPAY_MERCHANT_KEY / SIPAY_APP_SECRET)`
     });
   }
 
-  // total zorunlu ve 0'dan büyük
   const totalNum = Number(total);
   if (!isFinite(totalNum) || totalNum <= 0) {
     return res.status(400).json({ ok: false, error: 'BAD_TOTAL' });
