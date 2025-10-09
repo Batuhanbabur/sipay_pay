@@ -1,41 +1,44 @@
-// pages/api/sipay/purchase-link.js
+// api/sipay/purchase-link.js  (Vercel Node.js Serverless Function - CommonJS)
 
-export const config = { api: { bodyParser: true } }; // JSON body otomatik parse
-
-export default async function handler(req, res) {
+module.exports = async (req, res) => {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ ok: false, error: 'METHOD_NOT_ALLOWED' });
   }
 
-  // ENV
+  // ---- ENV ----
   const LIVE = process.env.SIPAY_LIVE === '1';
   const SIPAY_BASE = LIVE
     ? 'https://app.sipay.com.tr/ccpayment'
     : 'https://provisioning.sipay.com.tr/ccpayment';
 
   const MERCHANT_KEY = process.env.SIPAY_MERCHANT_KEY;
-  const RETURN_URL   = process.env.RETURN_URL;           // örn: https://<proje>.vercel.app/api/sipay/return
+  const RETURN_URL   = process.env.RETURN_URL;                 // örn: https://<proje>.vercel.app/api/sipay/return
   const CANCEL_URL   = process.env.CANCEL_URL || RETURN_URL;
 
   if (!MERCHANT_KEY || !RETURN_URL) {
     return res.status(500).json({
       ok: false,
       error: 'CONFIG',
-      detail: 'Missing MERCHANT_KEY or RETURN_URL env',
+      detail: 'Missing env: SIPAY_MERCHANT_KEY or RETURN_URL',
     });
   }
 
-  // Body'yi güvenli şekilde al
+  // ---- BODY (JSON) ----
   let body = req.body;
-  if (typeof body === 'string') {
-    try { body = JSON.parse(body); }
-    catch (e) {
-      return res.status(400).json({ ok: false, error: 'BAD_JSON', detail: 'Invalid JSON string' });
-    }
-  }
   if (!body || typeof body !== 'object') {
-    return res.status(400).json({ ok: false, error: 'BAD_JSON', detail: 'Empty or invalid JSON body' });
+    // Bazı ortamlarda req.body boş olabiliyor → ham gövdeyi oku
+    try {
+      const raw = await new Promise((resolve, reject) => {
+        let data = '';
+        req.on('data', (chunk) => (data += chunk));
+        req.on('end', () => resolve(data));
+        req.on('error', reject);
+      });
+      body = raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: 'BAD_JSON', detail: 'Invalid JSON body' });
+    }
   }
 
   const {
@@ -44,7 +47,7 @@ export default async function handler(req, res) {
     installments_number = 1,
     name,
     surname,
-    total,                 // opsiyonel; yoksa items toplamı
+    total,                 // opsiyonel; yoksa items toplamı kullanılır
     bill_email,
     bill_phone,
     bill_address1,
@@ -55,18 +58,22 @@ export default async function handler(req, res) {
     items = [],
   } = body;
 
-  if (!invoice_id)  return res.status(400).json({ ok:false, error:'VALIDATION', detail:'invoice_id required' });
+  // ---- VALIDATION ----
+  if (!invoice_id)      return res.status(400).json({ ok:false, error:'VALIDATION', detail:'invoice_id required' });
   if (!name || !surname) return res.status(400).json({ ok:false, error:'VALIDATION', detail:'name & surname required' });
-  if (!bill_email || !bill_phone) return res.status(400).json({ ok:false, error:'VALIDATION', detail:'bill_email & bill_phone required' });
+  if (!bill_email || !bill_phone)
+    return res.status(400).json({ ok:false, error:'VALIDATION', detail:'bill_email & bill_phone required' });
 
+  // ---- TOTAL ----
   const sumFromItems = Array.isArray(items)
-    ? items.reduce((s, it) => s + (Number(it.price)||0) * (Number(it.quantity)||0), 0)
+    ? items.reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.quantity) || 0), 0)
     : 0;
   const grandTotal = Number(total != null ? total : sumFromItems);
 
+  // ---- SIPAY PAYLOAD (purchase/link) ----
   const payload = {
     merchant_key: MERCHANT_KEY,
-    invoice: JSON.stringify(items || []), // Sipay string-JSON istiyor
+    invoice: JSON.stringify(items || []),           // string-JSON istiyorlar
     currency_code,
     max_installment: Number(installments_number) || 1,
     name,
@@ -105,17 +112,18 @@ export default async function handler(req, res) {
         error: 'SIPAY_NON_JSON',
         status: r.status,
         contentType: ctype,
-        detail: `Non-JSON response. Starts with: ${snippet}`,
+        detail: `Non-JSON from Sipay (${r.status} ${r.statusText}). Starts with: ${snippet}`,
       });
     }
 
     const data = await r.json();
+
     if (!r.ok) {
       console.error('[SIPAY ERROR]', r.status, data);
       return res.status(r.status).json({ ok:false, error:'SIPAY_ERROR', status:r.status, data });
     }
 
-    // Beklenen alanlar: { status:true, link:"...", order_id:"..." }
+    // Beklenen: { status:true, link:"...", order_id:"..." }
     if (data && (data.link || data.order_id || data.status)) {
       return res.status(200).json({ ok:true, ...data });
     }
@@ -126,4 +134,4 @@ export default async function handler(req, res) {
     console.error('[SERVER ERROR]', err);
     return res.status(500).json({ ok:false, error:'SERVER', detail:String(err?.message || err) });
   }
-}
+};
