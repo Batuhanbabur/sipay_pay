@@ -1,128 +1,87 @@
 // api/sipay/hash-3d.js
-// Vercel Node.js Serverless Function (CommonJS)
-
 const crypto = require('crypto');
 
-function toMoney2(n) {
-  const num = Number(n || 0);
-  return num.toFixed(2); // "1299.00"
+function sha1Hex(str){ return crypto.createHash('sha1').update(String(str), 'utf8').digest('hex'); }
+function sha256Hex(str){ return crypto.createHash('sha256').update(String(str), 'utf8').digest('hex'); }
+function randSha1Prefix(len){ return crypto.createHash('sha1').update(crypto.randomBytes(16)).digest('hex').slice(0, len); }
+
+// PHP doksuyla birebir aynı algoritma
+function generateHashKey(totalStr, installments, currencyCode, merchantKey, invoiceId, appSecret){
+  const data = `${totalStr}|${installments}|${currencyCode}|${merchantKey}|${invoiceId}`;
+
+  const iv    = randSha1Prefix(16);                    // 16 karakter
+  const salt  = randSha1Prefix(4);                     // 4 karakter
+  const pass  = sha1Hex(appSecret);                    // sha1(app_secret) -> hex
+  const keyHex= sha256Hex(pass + salt);                // sha256(pass + salt) -> hex(64)
+  const key   = Buffer.from(keyHex, 'hex');            // 32 byte
+  const ivBuf = Buffer.from(iv, 'utf8');               // 16 byte
+
+  const cipher = crypto.createCipheriv('aes-256-cbc', key, ivBuf);
+  let enc = cipher.update(data, 'utf8', 'base64');
+  enc += cipher.final('base64');
+
+  const bundle = `${iv}:${salt}:${enc}`.replace(/\//g, '__'); // sadece "/" -> "__"
+  return bundle;
 }
 
-function genInvoiceId() {
-  return 'INV-' + Date.now();
-}
-
-// Sipay hash üretimi (dokümandaki PHP örneğinin Node karşılığı)
-function generateHashKey(total, installments, currency_code, merchant_key, invoice_id, app_secret) {
-  // data = total|installments|currency_code|merchant_key|invoice_id
-  const data = [
-    toMoney2(total),
-    String(installments),
-    String(currency_code),
-    String(merchant_key),
-    String(invoice_id),
-  ].join('|');
-
-  const iv = crypto.createHash('sha1').update(String(Math.random())).digest('hex').slice(0, 16);
-  const password = crypto.createHash('sha1').update(String(app_secret)).digest('hex'); // sha1(app_secret)
-
-  const salt = crypto.createHash('sha1').update(String(Math.random())).digest('hex').slice(0, 4);
-  const saltWithPassword = crypto.createHash('sha256').update(password + salt).digest(); // Buffer
-
-  const cipher = crypto.createCipheriv('aes-256-cbc', saltWithPassword, iv);
-  let encrypted = cipher.update(data, 'utf8', 'base64');
-  encrypted += cipher.final('base64');
-
-  const bundle = `${iv}:${salt}:${encrypted}`;
-  return bundle.replace(/\//g, '__'); // PHP örneğindeki gibi '/' → '__'
-}
-
-// Vercel (Node) body reader
-function readJsonBody(req) {
-  return new Promise((resolve, reject) => {
-    let raw = '';
-    req.on('data', (c) => (raw += c));
-    req.on('end', () => {
-      try { resolve(raw ? JSON.parse(raw) : {}); } catch (e) { reject(e); }
-    });
-    req.on('error', reject);
+async function readJson(req){
+  const raw = await new Promise((resolve, reject)=>{
+    let d=''; req.on('data', c=> d+=c);
+    req.on('end', ()=> resolve(d)); req.on('error', reject);
   });
-}
-
-function pickEnvConfig(env) {
-  const MODE = (String(env).toLowerCase() === 'test') ? 'TEST' : 'LIVE';
-
-  // Yeni isimler (önerilen)
-  let MERCHANT_KEY = process.env[`SIPAY_MERCHANT_KEY_${MODE}`];
-  let APP_SECRET   = process.env[`SIPAY_APP_SECRET_${MODE}`];
-  let BASE         = process.env[`SIPAY_BASE_${MODE}`];
-
-  // Geriye uyumluluk (eski isimler)
-  if (!MERCHANT_KEY) MERCHANT_KEY = process.env.SIPAY_MERCHANT_KEY;
-  if (!APP_SECRET)   APP_SECRET   = process.env.SIPAY_APP_SECRET;
-  if (!BASE)         BASE         = process.env.SIPAY_BASE;
-
-  // Varsayılan base
-  if (!BASE) {
-    BASE = (MODE === 'LIVE')
-      ? 'https://app.sipay.com.tr/ccpayment'
-      : 'https://provisioning.sipay.com.tr/ccpayment';
-  }
-
-  return { MODE, MERCHANT_KEY, APP_SECRET, BASE };
+  return raw ? JSON.parse(raw) : {};
 }
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
-    return res.status(405).json({ ok: false, error: 'METHOD_NOT_ALLOWED' });
+    return res.status(405).json({ ok:false, error:'METHOD' });
   }
 
-  let body;
-  try { body = await readJsonBody(req); }
-  catch (e) {
-    return res.status(400).json({ ok: false, error: 'BAD_JSON', detail: String(e && e.message || e) });
-  }
+  try{
+    const body = await readJson(req);
 
-  const {
-    total,                   // number | string
-    currency_code = 'TRY',
-    installments_number = 1,
-    env = 'live',
-  } = body || {};
+    const envFlag  = (body.env || 'live').toLowerCase();
+    const base     = (envFlag === 'test')
+      ? (process.env.SIPAY_BASE || 'https://provisioning.sipay.com.tr/ccpayment')
+      : (process.env.SIPAY_BASE_LIVE || 'https://app.sipay.com.tr/ccpayment');
 
-  const { MODE, MERCHANT_KEY, APP_SECRET, BASE } = pickEnvConfig(env);
+    // ENV VARS (canlı isimler)
+    const merchantKey = process.env.SIPAY_MERCHANT_KEY || process.env.SIPAY_MERCHANT_KEY_LIVE;
+    const appSecret   = process.env.SIPAY_APP_SECRET   || process.env.SIPAY_APP_SECRET_LIVE;
 
-  if (!MERCHANT_KEY || !APP_SECRET) {
-    return res.status(500).json({
-      ok: false,
-      error: 'CONFIG',
-      detail: `Missing SIPAY_MERCHANT_KEY_${MODE} or SIPAY_APP_SECRET_${MODE} (or legacy names SIPAY_MERCHANT_KEY / SIPAY_APP_SECRET)`
+    if(!merchantKey || !appSecret){
+      return res.status(500).json({ ok:false, error:'CONFIG', detail:'Missing SIPAY_MERCHANT_KEY or SIPAY_APP_SECRET' });
+    }
+
+    // total -> kesin "xx.yy" string
+    const totalNum = Number(body.total);
+    if(!isFinite(totalNum) || totalNum <= 0){
+      return res.status(400).json({ ok:false, error:'BAD_TOTAL' });
+    }
+    const totalStr = totalNum.toFixed(2);
+
+    const currency  = String(body.currency_code || 'TRY').toUpperCase();
+    const inst      = parseInt(body.installments_number ?? 1, 10) || 1;
+
+    // benzersiz invoice_id
+    const invoiceId = body.invoice_id && String(body.invoice_id).trim()
+      ? String(body.invoice_id)
+      : `INV-${Date.now()}`;
+
+    const hashKey = generateHashKey(totalStr, inst, currency, merchantKey, invoiceId, appSecret);
+
+    return res.status(200).json({
+      ok: true,
+      base,
+      merchant_key: merchantKey,
+      invoice_id: invoiceId,
+      hash_key: hashKey,
+      currency_code: currency,
+      installments_number: inst,
+      total_str: totalStr,             // ← checkout bunu aynen kullanacak
     });
+  }catch(err){
+    return res.status(500).json({ ok:false, error:'SERVER', detail: String(err && err.message || err) });
   }
-
-  const totalNum = Number(total);
-  if (!isFinite(totalNum) || totalNum <= 0) {
-    return res.status(400).json({ ok: false, error: 'BAD_TOTAL' });
-  }
-
-  const invoice_id = genInvoiceId();
-  const hash_key = generateHashKey(
-    totalNum,
-    Number(installments_number || 1),
-    String(currency_code || 'TRY'),
-    MERCHANT_KEY,
-    invoice_id,
-    APP_SECRET
-  );
-
-  return res.status(200).json({
-    ok: true,
-    merchant_key: MERCHANT_KEY,
-    invoice_id,
-    hash_key,
-    currency_code: String(currency_code || 'TRY'),
-    installments_number: Number(installments_number || 1),
-    base: BASE,
-  });
 };
