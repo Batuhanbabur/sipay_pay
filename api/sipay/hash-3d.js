@@ -1,21 +1,18 @@
-// api/sipay/hash-3d.js
-// Vercel Serverless (Node/Edge değil), CommonJS
+// api/sipay/hash-3d.js  (Vercel Serverless - Node.js, CommonJS)
 'use strict';
 const crypto = require('crypto');
 
-/* ---------- CORS ---------- */
-const ALLOW_ORIGINS = ['*']; // Güvenlik için: '*'
+/* ===== CORS ===== */
 function setCORS(req, res) {
-  const origin = req.headers.origin || '';
-  let allow = '*';
-  res.setHeader('Access-Control-Allow-Origin', allow);
+  // Test için tüm origin'lere izin: istersen buraya 'https://do-lab.co' yazıp sabitle.
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'POST,GET,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
   res.setHeader('Access-Control-Max-Age', '86400');
 }
 
-/* ---------- Yardımcılar ---------- */
+/* ===== Body okuma (fallback) ===== */
 function readJSON(req) {
   return new Promise((resolve, reject) => {
     let raw = '';
@@ -27,21 +24,21 @@ function readJSON(req) {
     req.on('error', reject);
   });
 }
+
 const two = n => Number(n).toFixed(2);
 
+/* ===== Ortam değişkenleri ===== */
 function pickSecrets(isLive) {
   const env = process.env;
-  const merchant_key = isLive
-    ? (env.SIPAY_MERCHANT_KEY || env.SIPAY_MERCHANT_KEY_LIVE)
-    : (env.SIPAY_MERCHANT_KEY_TEST || env.SIPAY_MERCHANT_KEY);
-  const app_secret = isLive
-    ? (env.SIPAY_APP_SECRET || env.SIPAY_APP_SECRET_LIVE)
-    : (env.SIPAY_APP_SECRET_TEST || env.SIPAY_APP_SECRET);
+  // Tek isim kullanıyoruz: SIPAY_MERCHANT_KEY, SIPAY_APP_SECRET
+  // (ileride _LIVE/_TEST eklersen yine buradan türetebilirsin)
+  const merchant_key = env.SIPAY_MERCHANT_KEY;
+  const app_secret   = env.SIPAY_APP_SECRET;
   return { merchant_key, app_secret };
 }
 
+/* ===== Hash üretimi (Sipay örneği ile aynı) ===== */
 function makeHash({ total, installments_number, currency_code, merchant_key, invoice_id, app_secret }) {
-  // PHP örneği ile aynı algoritma
   const data = `${two(total)}|${installments_number}|${currency_code}|${merchant_key}|${invoice_id}`;
   const iv = crypto.createHash('sha1').update(String(Math.random())).digest('hex').substring(0, 16);
   const password = crypto.createHash('sha1').update(app_secret).digest('hex');
@@ -52,28 +49,31 @@ function makeHash({ total, installments_number, currency_code, merchant_key, inv
   return `${iv}:${salt}:${enc}`.replace(/\//g, '__');
 }
 
-/* ---------- Handler ---------- */
+/* ===== Handler ===== */
 module.exports = async (req, res) => {
-  setCORS(req, res);
+  setCORS(req, res); // CORS’u HER path’te önce ayarla
 
   // Preflight
-  if (req.method === 'OPTIONS') return res.status(204).end();
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
 
-  // Sağlık kontrolü (GET ile bakılabilir)
+  // Health check
   if (req.method === 'GET') {
     return res.status(200).json({ ok: true, route: '/api/sipay/hash-3d', method: 'GET' });
   }
 
-  // Sadece POST gerçek iş yapar
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST,GET,OPTIONS');
     return res.status(405).json({ ok: false, error: 'METHOD' });
   }
 
-  // Gövde
-  let body;
-  try { body = await readJSON(req); }
-  catch (e) { return res.status(400).json({ ok: false, error: 'BAD_JSON', detail: e.message }); }
+  // Body: önce req.body (Vercel bodyParser varsa), yoksa stream
+  let body = req.body;
+  if (!body || typeof body !== 'object') {
+    try { body = await readJSON(req); }
+    catch (e) { return res.status(400).json({ ok:false, error:'BAD_JSON', detail:e.message }); }
+  }
 
   const env = String(body.env || 'live').toLowerCase();
   const isLive = env === 'live';
@@ -91,17 +91,16 @@ module.exports = async (req, res) => {
 
   const { merchant_key, app_secret } = pickSecrets(isLive);
   if (!merchant_key || !app_secret) {
-    return res.status(500).json({ ok: false, error: 'CONFIG', detail: 'Missing SIPAY_MERCHANT_KEY/SIPAY_APP_SECRET' });
+    return res.status(500).json({ ok:false, error:'CONFIG', detail:'Missing SIPAY_MERCHANT_KEY or SIPAY_APP_SECRET' });
   }
 
-  // Her çağrıda tekil invoice
   const invoice_id = `INV-${Date.now()}`;
 
   let hash_key;
   try {
     hash_key = makeHash({ total, installments_number, currency_code, merchant_key, invoice_id, app_secret });
   } catch (e) {
-    return res.status(500).json({ ok: false, error: 'HASH', detail: e.message });
+    return res.status(500).json({ ok:false, error:'HASH', detail:e.message });
   }
 
   return res.status(200).json({
