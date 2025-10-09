@@ -7,47 +7,45 @@ function cors(res, origin = '*') {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 
-const sha1Hex   = (s) => crypto.createHash('sha1').update(String(s), 'utf8').digest('hex');
-const sha256Hex = (s) => crypto.createHash('sha256').update(String(s), 'utf8').digest('hex');
+const sha1Hex   = (s) => crypto.createHash('sha1').update(String(s),'utf8').digest('hex');
+const sha256Hex = (s) => crypto.createHash('sha256').update(String(s),'utf8').digest('hex');
 
-/**
- * PHP eşleniği:
- * $iv  = substr(sha1(mt_rand()), 0, 16);
- * $salt = substr(sha1(mt_rand()), 0, 4);
- * $password = sha1($app_secret);
- * $saltWithPassword = hash('sha256', $password.$salt); // 64 hex
- * $key = hex2bin($saltWithPassword); // 32 raw byte  <-- kritik nokta
- * $enc = openssl_encrypt("$total|$inst|$cur|$mkey|$inv", 'AES-256-CBC', $key, 0, $iv);
- * $hash_key = str_replace('/', '__', "$iv:$salt:$enc");
- */
-function generateHashKey(totalStr, installments, currency, merchant_key, invoice_id, app_secret) {
-  const data = `${totalStr}|${installments}|${currency}|${merchant_key}|${invoice_id}`;
+// PHP örneğiyle birebir aynı mantık
+function generateHashKey(totalStr, installment, currency, merchant_key, invoice_id, app_secret) {
+  const data = `${totalStr}|${installment}|${currency}|${merchant_key}|${invoice_id}`;
 
-  // IV ve salt (PHP’deki gibi sha1(mt_rand()) türevi)
-  const ivStr   = sha1Hex(crypto.randomBytes(16)).slice(0, 16); // 16 ascii char
-  const saltStr = sha1Hex(crypto.randomBytes(16)).slice(0, 4);  // 4 ascii char
+  const ivStr = sha1Hex(Math.random()).slice(0,16);            // 16 ascii
+  const ivBuf = Buffer.from(ivStr,'utf8');
 
-  // Şifre -> sha1 hex
-  const passwordHex = sha1Hex(app_secret);
+  const passwordHex = sha1Hex(app_secret);                     // 40 char hex (ascii)
+  const saltStr = sha1Hex(Math.random()).slice(0,4);           // 4 ascii
+  const saltWithPasswordHex = sha256Hex(passwordHex + saltStr);// 64 char hex (ascii)
 
-  // Saltlı şifre -> sha256 hex (64)
-  const saltWithPasswordHex = sha256Hex(passwordHex + saltStr);
-
-  // *** KRİTİK ***: Hex'i ASCII olarak kullanmak yerine IKILIK (raw) 32 bayta çevir
-  const keyBuf = Buffer.from(saltWithPasswordHex, 'hex'); // 32 bytes
-  const ivBuf  = Buffer.from(ivStr, 'utf8');              // 16 bytes
+  // PHP openssl_encrypt string key'i doğrudan alıyor; biz de ilk 32 ascii karakteri kullanıyoruz (truncate)
+  const keyBuf = Buffer.from(saltWithPasswordHex.slice(0,32),'utf8');
 
   const cipher = crypto.createCipheriv('aes-256-cbc', keyBuf, ivBuf);
   let encrypted = cipher.update(data, 'utf8', 'base64');
   encrypted += cipher.final('base64');
 
-  return `${ivStr}:${saltStr}:${encrypted}`.replace(/\//g, '__');
+  return `${ivStr}:${saltStr}:${encrypted}`.replace(/\//g,'__');
 }
 
-export default async function handler(req, res) {
-  cors(res, '*');
+// Tutarı Sipay ile uyumlu TEK formatta üret:
+// Tam sayı ise "2649", kuruş varsa "2649.50"
+function canonicalTotalStr(n) {
+  const cents = Math.round(Number(n) * 100);
+  if (!Number.isFinite(cents) || cents <= 0) return null;
+  if (cents % 100 === 0) return String(cents / 100);
+  const s = (cents / 100).toFixed(2);
+  // (ör. 12.30 → 12.30 kalsın; yalnız .00 tam sayılarda zaten yukarıda eleniyor)
+  return s;
+}
+
+export default async function handler(req,res){
+  cors(res,'*');
   if (req.method === 'OPTIONS') return res.status(204).end();
-  if (req.method !== 'POST')   return res.status(405).json({ ok:false, error:'METHOD' });
+  if (req.method !== 'POST') return res.status(405).json({ok:false,error:'METHOD'});
 
   const {
     SIPAY_MERCHANT_KEY = '',
@@ -62,35 +60,28 @@ export default async function handler(req, res) {
 
   try {
     let body = {};
-    try {
-      body = typeof req.body === 'object' ? req.body : JSON.parse(req.body || '{}');
-    } catch { body = {}; }
+    try { body = typeof req.body === 'object' ? req.body : JSON.parse(req.body||'{}'); } catch { body = {}; }
 
     const {
       total,
       currency_code = 'TRY',
       installments_number = 1,
-      env = 'live',
+      env = 'live'
     } = body || {};
 
-    const totalNum = Number(total);
-    if (!isFinite(totalNum) || totalNum <= 0) {
-      return res.status(400).json({ ok:false, error:'BAD_TOTAL' });
-    }
-    const totalStr = totalNum.toFixed(2); // "649.00"
+    const total_str = canonicalTotalStr(total);
+    if (!total_str) return res.status(400).json({ ok:false, error:'BAD_TOTAL' });
 
-    // PHP örneklerindeki gibi sade bir invoice id
-    const invoice_id = `INV-${Date.now()}`;
-
+    const invoice_id = `INV-${Date.now()}`; // benzersiz
     const base = env === 'test' ? SIPAY_BASE_TEST : SIPAY_BASE_LIVE;
 
     const hash_key = generateHashKey(
-      totalStr,
+      total_str,
       String(installments_number),
       String(currency_code),
       String(SIPAY_MERCHANT_KEY),
       String(invoice_id),
-      String(SIPAY_APP_SECRET),
+      String(SIPAY_APP_SECRET)
     );
 
     return res.status(200).json({
@@ -101,9 +92,9 @@ export default async function handler(req, res) {
       hash_key,
       currency_code,
       installments_number,
-      total_str: totalStr,
+      total_str // ← **Kanonik** string (ör. "2649" veya "2649.50")
     });
-  } catch (err) {
-    return res.status(500).json({ ok:false, error:'SERVER', detail: String(err?.message || err) });
+  } catch (e) {
+    return res.status(500).json({ ok:false, error:'SERVER', detail:String(e?.message||e) });
   }
 }
