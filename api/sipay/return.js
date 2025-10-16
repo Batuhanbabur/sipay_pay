@@ -1,100 +1,141 @@
 // File: /api/sipay/return.js
-export const config = { api: { bodyParser: false } };
+// Amaç: Sipay POST dönüşünü al, Google Sheets'e logla, sonra ThankYou / Fail sayfasına yönlendir.
 
-import { StringDecoder } from 'string_decoder';
-import querystring from 'querystring';
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxM58aX4b3iHgmF7SA0pA064mot2lRDx6ehvq2A3hqX5vBad2aPOXc1GG3goF4MIE3jZQ/exec";
 
-const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL; // <- Vercel Env'e ekle
-const APPS_SCRIPT_BEARER = process.env.APPS_SCRIPT_BEARER || ''; // opsiyonel
-
-function readRawBody(req) {
-  return new Promise((resolve, reject) => {
-    const decoder = new StringDecoder('utf8');
-    let data = '';
-    req.on('data', chunk => { data += decoder.write(chunk); });
-    req.on('end',  () => { data += decoder.end(); resolve(data); });
-    req.on('error', reject);
-  });
+function cors(res, origin = "*") {
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-async function postToSheet(payload){
-  if (!APPS_SCRIPT_URL) return;
-  const headers = { 'Content-Type': 'application/json' };
-  if (APPS_SCRIPT_BEARER) headers['Authorization'] = `Bearer ${APPS_SCRIPT_BEARER}`;
+function toQS(obj) {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(obj || {})) {
+    if (v !== undefined && v !== null) sp.set(k, String(v));
+  }
+  return sp.toString();
+}
+
+// Body'yi güvenle oku (JSON veya form-urlencoded)
+async function readBody(req) {
+  // Vercel bazen body'yi obje olarak veriyor
+  if (req.body && typeof req.body === "object") return req.body;
+
+  const ctype = String(req.headers["content-type"] || "").toLowerCase();
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const raw = Buffer.concat(chunks).toString("utf8") || "";
+
+  if (ctype.includes("application/json")) {
+    try { return JSON.parse(raw || "{}"); } catch { return {}; }
+  }
+  if (ctype.includes("application/x-www-form-urlencoded")) {
+    const p = new URLSearchParams(raw);
+    const out = {};
+    for (const [k, v] of p) out[k] = v;
+    return out;
+  }
+  // Diğerleri
+  try { return JSON.parse(raw || "{}"); } catch { return {}; }
+}
+
+// Kısa timeout'lu fetch (log bekletmesin)
+async function postJSON(url, payload, timeoutMs = 1500) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    await fetch(APPS_SCRIPT_URL, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload)
+    await fetch(url, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(payload),
+      signal: ctrl.signal
     });
-  } catch (err) {
-    console.error('Sheets error:', err);
+  } catch (_) {
+    // Log başarısız olsa bile akışı bozma
+  } finally {
+    clearTimeout(t);
   }
 }
 
 export default async function handler(req, res) {
-  try {
-    if (req.method !== 'POST') {
-      return res.status(405).send('Method Not Allowed');
-    }
+  cors(res, "*");
 
-    const raw = await readRawBody(req);
-    const contentType = (req.headers['content-type'] || '').toLowerCase();
+  // Sipay bazı ortamlarda ön kontrol yapabilir
+  if (req.method === "OPTIONS") return res.status(204).end();
 
-    let body = {};
-    if (contentType.includes('application/json')) {
-      try { body = JSON.parse(raw || '{}'); } catch { body = {}; }
-    } else {
-      body = querystring.parse(raw || '');
-    }
-
-    // Sipay ortak alanlar
-    const invoice_id        = String(body.invoice_id || '');
-    const amount            = String(body.amount || body.total || '');
-    const status_code       = String(body.status_code || body.sipay_status || '');
-    const status_description= String(body.status_description || body.error || '');
-    const sipay_status      = String(body.sipay_status || '');
-    const payment_status    = String(body.payment_status || '');
-    const transaction_type  = String(body.transaction_type || '');
-
-    // Müşteri / fatura (bizim formdan geliyordu)
-    const name    = String(body.name || body.bill_name || '');
-    const surname = String(body.surname || '');
-    const email   = String(body.bill_email || '');
-    const phone   = String(body.bill_phone || '');
-    const city    = String(body.bill_city || '');
-    const country = String(body.bill_country || '');
-    const items_json = String(body.items || '');
-
-    // Başarı kriteri: Sipay çoğunlukla status_code === '0'
-    const success = (status_code === '0');
-
-    // Sheets’e GÖNDER (başarılı/başarısız fark etmeksizin)
-    await postToSheet({
-      success,
-      invoice_id,
-      amount,
-      status_code,
-      status_description,
-      sipay_status,
-      payment_status,
-      transaction_type,
-      name, surname, email, phone, city, country,
-      items_json,
-      source: 'vercel-return'
-    });
-
-    // Kullanıcı yönlendirmesi
-    if (success) {
-      const thankUrl = `https://do-lab.co/tesekkur_ederiz/?invoice_id=${encodeURIComponent(invoice_id)}&amount=${encodeURIComponent(amount)}`;
-      res.writeHead(302, { Location: thankUrl });
-    } else {
-      const failUrl = `https://do-lab.co/basarisiz/?invoice_id=${encodeURIComponent(invoice_id)}&amount=${encodeURIComponent(amount)}&status_code=${encodeURIComponent(status_code)}&status_description=${encodeURIComponent(status_description)}&sipay_status=${encodeURIComponent(sipay_status)}&payment_status=${encodeURIComponent(payment_status)}&transaction_type=${encodeURIComponent(transaction_type)}`;
-      res.writeHead(302, { Location: failUrl });
-    }
-    return res.end();
-  } catch (err) {
-    console.error('return handler error:', err);
-    return res.status(500).send('Server Error');
+  // Sağlık testi için GET'i basitçe göster; asıl akış POST
+  if (req.method !== "POST") {
+    return res.status(405).json({ ok:false, error:"METHOD" });
   }
+
+  // Ortam URL'leri (yoksa defaultları kullan)
+  const THANKYOU_URL = process.env.THANKYOU_URL || "https://do-lab.co/tesekkur_ederiz/";
+  const FAIL_URL     = process.env.FAIL_URL     || "https://do-lab.co/basarisiz/";
+
+  let body = await readBody(req);
+
+  // Sipay payload örnek alanlar
+  const invoice_id       = String(body.invoice_id || body.merchant_oid || "");
+  const amount           = String(body.amount     || body.total        || "");
+  const status_code      = String(
+    body.status_code ??
+    body.error_code ??
+    body.response_code ??
+    ""
+  );
+  const status_desc      = String(
+    body.status_description ??
+    body.error ??
+    body.response_message ??
+    ""
+  );
+  const sipay_status     = Number(body.sipay_status ?? 0);
+  const payment_status   = Number(body.payment_status ?? 0);
+  const transaction_type = String(body.transaction_type || "");
+  const card_brand       = String(body.card_brand || body.card_type || "");
+  const customer_email   = String(body.email || body.bill_email || "");
+  const customer_phone   = String(body.phone || body.bill_phone || "");
+
+  // Başarı kabul kriteri
+  const isSuccess = (sipay_status === 1 || payment_status === 1 || status_code === "0");
+
+  // Google Sheets'e LOG — SUCCESS ya da FAIL
+  const logPayload = {
+    stage: isSuccess ? "SUCCESS" : "FAIL",
+    ts: new Date().toISOString(),
+    // Sipay'ten gelen ham alanlar
+    invoice_id,
+    amount,
+    status_code,
+    status_description: status_desc,
+    sipay_status,
+    payment_status,
+    transaction_type,
+    card_brand,
+    customer_email,
+    customer_phone,
+    // Ham body'yi görmek istersen:
+    raw: body
+  };
+  // Arkada, kısa timeout ile gönder (await etsek de kısa timeout var)
+  await postJSON(APPS_SCRIPT_URL, logPayload, 1500);
+
+  // Teşekkür ya da Başarısız sayfasına yönlendirme
+  const qs = toQS({
+    order: invoice_id,
+    amount: amount,
+    status_code,
+    status_description: status_desc,
+    sipay_status: String(sipay_status),
+    payment_status: String(payment_status),
+    transaction_type
+  });
+
+  const base = isSuccess ? THANKYOU_URL : FAIL_URL;
+  const sep = base.includes("?") ? "&" : "?";
+  const to = base + sep + qs;
+
+  // 302 Redirect
+  res.status(302).setHeader("Location", to).end();
 }
