@@ -1,48 +1,100 @@
 // File: /api/sipay/return.js
-export default async function handler(req, res) {
-  // Sipay POST ile gelir; sağlık/deneme için GET de destekleyelim
-  if (req.method === 'OPTIONS') return res.status(204).end();
-  if (req.method !== 'POST') return res.status(405).json({ ok:false, error:'METHOD' });
+export const config = { api: { bodyParser: false } };
 
-  // Vercel ENV'de bunları ayarlamıştık:
-  const THANKYOU_URL = process.env.THANKYOU_URL || 'https://do-lab.co/tesekkur_ederiz/';
-  const FAIL_URL     = process.env.FAIL_URL     || 'https://do-lab.co/basarisiz/';
+import { StringDecoder } from 'string_decoder';
+import querystring from 'querystring';
 
-  // Sipay gövdesini güvenle al
-  let body = {};
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL; // <- Vercel Env'e ekle
+const APPS_SCRIPT_BEARER = process.env.APPS_SCRIPT_BEARER || ''; // opsiyonel
+
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    const decoder = new StringDecoder('utf8');
+    let data = '';
+    req.on('data', chunk => { data += decoder.write(chunk); });
+    req.on('end',  () => { data += decoder.end(); resolve(data); });
+    req.on('error', reject);
+  });
+}
+
+async function postToSheet(payload){
+  if (!APPS_SCRIPT_URL) return;
+  const headers = { 'Content-Type': 'application/json' };
+  if (APPS_SCRIPT_BEARER) headers['Authorization'] = `Bearer ${APPS_SCRIPT_BEARER}`;
   try {
-    body = typeof req.body === 'object' ? req.body : JSON.parse(req.body || '{}');
-  } catch {
-    body = {};
+    await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+  } catch (err) {
+    console.error('Sheets error:', err);
   }
+}
 
-  // Sipay tipik alanlar (gelmeyenler için fallback)
-  const invoice_id       = String(body.invoice_id || body.merchant_oid || '');
-  const amount           = String(body.amount     || body.total        || '');
-  const status_code      = String(body.status_code ?? body.error_code ?? '');
-  const status_desc      = String(body.status_description ?? body.error ?? '');
-  const sipay_status     = Number(body.sipay_status ?? 0);
-  const payment_status   = Number(body.payment_status ?? 0);
-  const transaction_type = String(body.transaction_type || '');
+export default async function handler(req, res) {
+  try {
+    if (req.method !== 'POST') {
+      return res.status(405).send('Method Not Allowed');
+    }
 
-  // Başarı kriteri: sipay_status veya payment_status 1 ise başarılı sayalım
-  const isSuccess = (sipay_status === 1 || payment_status === 1 || status_code === '0');
+    const raw = await readRawBody(req);
+    const contentType = (req.headers['content-type'] || '').toLowerCase();
 
-  // Kullanışlı query string oluştur
-  const params = new URLSearchParams({
-    order: invoice_id,
-    amount: amount,
-    status_code,
-    status_description: status_desc,
-    sipay_status: String(sipay_status),
-    payment_status: String(payment_status),
-    transaction_type,
-  }).toString();
+    let body = {};
+    if (contentType.includes('application/json')) {
+      try { body = JSON.parse(raw || '{}'); } catch { body = {}; }
+    } else {
+      body = querystring.parse(raw || '');
+    }
 
-  // Yönlendir
-  const to = (isSuccess ? THANKYOU_URL : FAIL_URL) + (THANKYOU_URL.includes('?') ? '&' : '?') + params;
+    // Sipay ortak alanlar
+    const invoice_id        = String(body.invoice_id || '');
+    const amount            = String(body.amount || body.total || '');
+    const status_code       = String(body.status_code || body.sipay_status || '');
+    const status_description= String(body.status_description || body.error || '');
+    const sipay_status      = String(body.sipay_status || '');
+    const payment_status    = String(body.payment_status || '');
+    const transaction_type  = String(body.transaction_type || '');
 
-  // (İstersen localStorage fallback için bir mini HTML üzerinden redirect de yapabiliriz;
-  // ama 302 yeterli.)
-  res.status(302).setHeader('Location', to).end();
+    // Müşteri / fatura (bizim formdan geliyordu)
+    const name    = String(body.name || body.bill_name || '');
+    const surname = String(body.surname || '');
+    const email   = String(body.bill_email || '');
+    const phone   = String(body.bill_phone || '');
+    const city    = String(body.bill_city || '');
+    const country = String(body.bill_country || '');
+    const items_json = String(body.items || '');
+
+    // Başarı kriteri: Sipay çoğunlukla status_code === '0'
+    const success = (status_code === '0');
+
+    // Sheets’e GÖNDER (başarılı/başarısız fark etmeksizin)
+    await postToSheet({
+      success,
+      invoice_id,
+      amount,
+      status_code,
+      status_description,
+      sipay_status,
+      payment_status,
+      transaction_type,
+      name, surname, email, phone, city, country,
+      items_json,
+      source: 'vercel-return'
+    });
+
+    // Kullanıcı yönlendirmesi
+    if (success) {
+      const thankUrl = `https://do-lab.co/tesekkur_ederiz/?invoice_id=${encodeURIComponent(invoice_id)}&amount=${encodeURIComponent(amount)}`;
+      res.writeHead(302, { Location: thankUrl });
+    } else {
+      const failUrl = `https://do-lab.co/basarisiz/?invoice_id=${encodeURIComponent(invoice_id)}&amount=${encodeURIComponent(amount)}&status_code=${encodeURIComponent(status_code)}&status_description=${encodeURIComponent(status_description)}&sipay_status=${encodeURIComponent(sipay_status)}&payment_status=${encodeURIComponent(payment_status)}&transaction_type=${encodeURIComponent(transaction_type)}`;
+      res.writeHead(302, { Location: failUrl });
+    }
+    return res.end();
+  } catch (err) {
+    console.error('return handler error:', err);
+    return res.status(500).send('Server Error');
+  }
 }
