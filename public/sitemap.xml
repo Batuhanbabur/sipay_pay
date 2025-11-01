@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://do-lab.co/</loc><changefreq>weekly</changefreq><priority>0.9</priority></url>
+
+  <!-- Ana sayfalar -->
+  <url><loc>https://do-lab.co/anasayfa/</loc><changefreq>monthly</changefreq></url>
+  <url><loc>https://do-lab.co/materyal/</loc><changefreq>monthly</changefreq></url>
+  <url><loc>https://do-lab.co/hulya-fabrikasi/</loc><changefreq>weekly</changefreq></url>
+  <url><loc>https://do-lab.co/hakkimizda/</loc><changefreq>yearly</changefreq></url>
+  <url><loc>https://do-lab.co/dukkan/</loc><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://do-lab.co/blog/</loc><changefreq>daily</changefreq></url>
+  <url><loc>https://do-lab.co/portfolyo/</loc><changefreq>monthly</changefreq></url>
+  <url><loc>https://do-lab.co/bize-ulasin/</loc><changefreq>yearly</changefreq></url>
+
+  <!-- Hukuki sayfalar -->
+  <url><loc>https://do-lab.co/iptaliade/</loc><changefreq>yearly</changefreq></url>
+  <url><loc>https://do-lab.co/gizlilik/</loc><changefreq>yearly</changefreq></url>
+  <url><loc>https://do-lab.co/mss/</loc><changefreq>yearly</changefreq></url>
+  <url><loc>https://do-lab.co/cerez-politikasi/</loc><changefreq>yearly</changefreq></url>
+</urlset>
