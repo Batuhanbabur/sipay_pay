@@ -46,8 +46,6 @@ module.exports = async function handler(req, res) {
     )
   ).toString("base64");
 
-  // PayTR örnek koduna göre doğru hash hesaplama:
-  // hash_str + merchant_salt → bu string'i merchant_key ile imzala
   const hash_str =
     merchant_id +
     user_ip +
@@ -55,10 +53,10 @@ module.exports = async function handler(req, res) {
     email +
     String(payment_amount) +
     user_basket +
-    "0" +        // no_installment
-    "0" +        // max_installment
-    "TL" +       // currency
-    TEST_MODE;   // test_mode
+    "0" +
+    "0" +
+    "TL" +
+    TEST_MODE;
 
   const paytr_token = crypto
     .createHmac("sha256", merchant_key)
@@ -79,8 +77,8 @@ module.exports = async function handler(req, res) {
     user_name:        user_name    || "Müşteri",
     user_address:     user_address || "Belirtilmedi",
     user_phone:       user_phone   || "05000000000",
-    merchant_ok_url:  "https://www.do-lab.co/odeme-basarili",
-    merchant_fail_url:"https://www.do-lab.co/odeme-basarisiz",
+    merchant_ok_url:  "https://www.do-lab.co/tesekkur_ederiz",
+    merchant_fail_url:"https://www.do-lab.co/basarisiz",
     timeout_limit:    "30",
     debug_on:         "1",
     test_mode:        TEST_MODE,
