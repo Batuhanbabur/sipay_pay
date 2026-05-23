@@ -1,10 +1,6 @@
-// api/paytr/callback.js
-// PayTR ödeme sonucunu alır, hash doğrular,
-// Sheets'i günceller ve Brevo ile bildirim gönderir.
-
 const crypto = require("crypto");
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).send("Method not allowed");
 
   const merchant_key   = process.env.PAYTR_MERCHANT_KEY;
@@ -20,7 +16,6 @@ export default async function handler(req, res) {
     test_mode, payment_type, currency,
   } = req.body;
 
-  // ── Hash doğrulama ────────────────────────────────────────────
   const hash_str      = merchant_oid + merchant_salt + status + total_amount;
   const expected_hash = crypto
     .createHmac("sha256", merchant_key)
@@ -35,12 +30,6 @@ export default async function handler(req, res) {
   const isSuccess = status === "success";
   const now = new Date().toLocaleString("tr-TR", { timeZone: "Europe/Istanbul" });
 
-  console.log(isSuccess
-    ? `✅ Ödeme başarılı | ${merchant_oid} | ₺${(total_amount/100).toFixed(2)} | ${payment_type}`
-    : `❌ Ödeme başarısız | ${merchant_oid} | Kod: ${failed_reason_code} | ${failed_reason_msg}`
-  );
-
-  // ── 1. Google Sheets — satırı güncelle ───────────────────────
   const sheetsPromise = SHEETS_WEBHOOK
     ? fetch(SHEETS_WEBHOOK, {
         method:  "POST",
@@ -57,7 +46,6 @@ export default async function handler(req, res) {
       }).catch(err => console.error("Sheets güncelleme hatası:", err))
     : Promise.resolve();
 
-  // ── 2. Brevo — ödeme sonuç bildirimi ─────────────────────────
   const notifyHtml = isSuccess
     ? `<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto">
         <div style="background:#000;padding:16px 20px">
@@ -86,10 +74,7 @@ export default async function handler(req, res) {
   const brevoPromise = (BREVO_API_KEY && NOTIFY_EMAIL && FROM_EMAIL)
     ? fetch("https://api.brevo.com/v3/smtp/email", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "api-key":      BREVO_API_KEY,
-        },
+        headers: { "Content-Type": "application/json", "api-key": BREVO_API_KEY },
         body: JSON.stringify({
           sender:      { name: "DO-LAB Orders", email: FROM_EMAIL },
           to:          [{ email: NOTIFY_EMAIL }],
@@ -103,7 +88,6 @@ export default async function handler(req, res) {
 
   await Promise.allSettled([sheetsPromise, brevoPromise]);
 
-  // PayTR'ye mutlaka "OK" dön
   res.setHeader("Content-Type", "text/plain");
   return res.status(200).send("OK");
-}
+};
