@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 
 module.exports = async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "https://do-lab.co");
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
@@ -77,8 +77,8 @@ module.exports = async function handler(req, res) {
     user_name:        user_name    || "Müşteri",
     user_address:     user_address || "Belirtilmedi",
     user_phone:       user_phone   || "05000000000",
-    merchant_ok_url:  "https://do-lab.co/tesekkur_ederiz",
-    merchant_fail_url:"https://do-lab.co/basarisiz",
+    merchant_ok_url:  "https://www.do-lab.co/tesekkur_ederiz",
+    merchant_fail_url:"https://www.do-lab.co/basarisiz",
     timeout_limit:    "30",
     debug_on:         "1",
     test_mode:        TEST_MODE,
