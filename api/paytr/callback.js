@@ -1,6 +1,6 @@
 const crypto = require("crypto");
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).send("Method not allowed");
 
   const merchant_key   = process.env.PAYTR_MERCHANT_KEY;
