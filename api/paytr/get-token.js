@@ -19,9 +19,11 @@ module.exports = async function handler(req, res) {
   const merchant_salt = process.env.PAYTR_MERCHANT_SALT;
 
   if (!merchant_id || !merchant_key || !merchant_salt) {
-    console.error("PayTR credentials eksik — env variables kontrol et");
+    console.error("PayTR credentials eksik");
     return res.status(500).json({ error: "Sunucu yapılandırma hatası" });
   }
+
+  const TEST_MODE = "1"; // Canlıya geçince "0" yap
 
   const merchant_oid = "DL" + Date.now();
 
@@ -44,6 +46,7 @@ module.exports = async function handler(req, res) {
     )
   ).toString("base64");
 
+  // Hash — tüm değerler postData ile birebir aynı olmalı
   const hash_str =
     merchant_id +
     user_ip +
@@ -51,10 +54,10 @@ module.exports = async function handler(req, res) {
     email +
     String(payment_amount) +
     user_basket +
-    "0" +
-    "0" +
-    "TL" +
-    "0";
+    "0" +        // no_installment
+    "0" +        // max_installment
+    "TL" +       // currency
+    TEST_MODE;   // test_mode — postData ile aynı olmalı
 
   const paytr_token = crypto
     .createHmac("sha256", merchant_key + merchant_salt)
@@ -79,7 +82,7 @@ module.exports = async function handler(req, res) {
     merchant_fail_url:"https://www.do-lab.co/odeme-basarisiz",
     timeout_limit:    "30",
     debug_on:         "1",
-    test_mode:        "1",
+    test_mode:        TEST_MODE,
     lang:             "tr",
   });
 
@@ -93,10 +96,7 @@ module.exports = async function handler(req, res) {
     const data = await paytrRes.json();
 
     if (data.status === "success") {
-      return res.status(200).json({
-        token:        data.token,
-        merchant_oid,
-      });
+      return res.status(200).json({ token: data.token, merchant_oid });
     } else {
       console.error("PayTR token hatası:", data);
       return res.status(400).json({ error: data.reason || "Token alınamadı" });
@@ -105,4 +105,4 @@ module.exports = async function handler(req, res) {
     console.error("PayTR bağlantı hatası:", err);
     return res.status(500).json({ error: "Sunucu hatası" });
   }
-}
+};
