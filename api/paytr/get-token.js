@@ -1,5 +1,22 @@
 const crypto = require("crypto");
 
+// Upstash Redis — sipariş verisini sakla
+async function kvSet(key, value) {
+  const url   = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return;
+  await fetch(`${url}/set/${encodeURIComponent(key)}`, {
+    method:  "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body:    JSON.stringify(JSON.stringify(value)), // Upstash string bekliyor
+  });
+  // 7 gün sonra otomatik sil
+  await fetch(`${url}/expire/${encodeURIComponent(key)}/604800`, {
+    method:  "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -19,12 +36,10 @@ module.exports = async function handler(req, res) {
   const merchant_salt = process.env.PAYTR_MERCHANT_SALT;
 
   if (!merchant_id || !merchant_key || !merchant_salt) {
-    console.error("PayTR credentials eksik");
     return res.status(500).json({ error: "Sunucu yapılandırma hatası" });
   }
 
-  const TEST_MODE = "1"; // Canlıya geçince "0" yap
-
+  const TEST_MODE    = "1"; // Canlıya geçince "0" yap
   const merchant_oid = "DL" + Date.now();
 
   const payment_amount = cart.reduce((sum, item) => {
@@ -33,30 +48,19 @@ module.exports = async function handler(req, res) {
 
   const user_ip =
     (req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
-    req.socket?.remoteAddress ||
-    "1.2.3.4";
+    req.socket?.remoteAddress || "1.2.3.4";
 
   const user_basket = Buffer.from(
-    JSON.stringify(
-      cart.map((item) => [
-        String(item.name),
-        parseFloat(item.price).toFixed(2),
-        parseInt(item.quantity) || 1,
-      ])
-    )
+    JSON.stringify(cart.map((item) => [
+      String(item.name),
+      parseFloat(item.price).toFixed(2),
+      parseInt(item.quantity) || 1,
+    ]))
   ).toString("base64");
 
   const hash_str =
-    merchant_id +
-    user_ip +
-    merchant_oid +
-    email +
-    String(payment_amount) +
-    user_basket +
-    "0" +
-    "0" +
-    "TL" +
-    TEST_MODE;
+    merchant_id + user_ip + merchant_oid + email +
+    String(payment_amount) + user_basket + "0" + "0" + "TL" + TEST_MODE;
 
   const paytr_token = crypto
     .createHmac("sha256", merchant_key)
@@ -64,10 +68,7 @@ module.exports = async function handler(req, res) {
     .digest("base64");
 
   const postData = new URLSearchParams({
-    merchant_id,
-    user_ip,
-    merchant_oid,
-    email,
+    merchant_id, user_ip, merchant_oid, email,
     payment_amount:   String(payment_amount),
     currency:         "TL",
     user_basket,
@@ -95,6 +96,17 @@ module.exports = async function handler(req, res) {
     const data = await paytrRes.json();
 
     if (data.status === "success") {
+      // Sipariş verisini KV'ye kaydet — callback'te müşteri maili için kullanılacak
+      await kvSet(`order:${merchant_oid}`, {
+        merchant_oid,
+        email,
+        user_name:    user_name || "",
+        user_phone:   user_phone || "",
+        user_address: user_address || "",
+        cart,
+        payment_amount,
+      });
+
       return res.status(200).json({ token: data.token, merchant_oid });
     } else {
       console.error("PayTR token hatası:", data);
